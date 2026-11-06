@@ -104,6 +104,41 @@ def ensure_calendars(creds) -> dict:
     return calendars
 
 
+def connect_calendars() -> dict:
+    """구글 로그인 → 출결 캘린더 9개. 실패해도 예외를 밖으로 내지 않는다 (앞에서 넣은 인증서·복무 값은 살린다)."""
+    try:
+        creds = run_oauth()
+        print("\n📅  출결 분류 캘린더 확인/생성 중...")
+        return ensure_calendars(creds)
+    except (SystemExit, Exception) as e:
+        print(f"  ⚠️  구글 캘린더 연결은 못 했습니다 ({e or '열쇠 파일 문제'}).")
+        print("     나머지 설정은 그대로 둡니다. 열쇠를 확인한 뒤 «출결 연결해줘» 로 다시 하시면 됩니다.")
+        return {}
+
+
+def calendar_only() -> int:
+    """`setup_wizard.py --calendar` — 다른 질문 없이 출결(구글 캘린더) 연결만 한다.
+    키보드 입력이 필요 없어서(구글 로그인은 브라우저 창) 클로드가 직접 돌려도 된다.
+    연수 날엔 열쇠가 없어 건너뛰고, 나중에 열쇠를 받은 뒤 이것만 돌리는 길이다 (2026-11-06)."""
+    try:
+        cfg = teacher_config.load_config()
+    except teacher_config.ConfigMissingError:
+        print("❌  아직 최초 설정을 안 하셨습니다. setup_wizard.py 를 먼저 돌려 주세요.")
+        return 1
+    if not _OAUTH_CLIENT_FILE.exists():
+        print(f"❌  구글 열쇠 파일이 없습니다: {_OAUTH_CLIENT_FILE}")
+        print("   docs/02_구글-연동.md 대로 구글 클라우드에서 열쇠를 만든 뒤 다시 돌려 주세요.")
+        return 1
+    calendars = connect_calendars()
+    if not calendars:
+        return 1
+    teacher_config.save_config({**cfg, "calendars": calendars})
+    print(f"\n🎉  출결 캘린더 {len(calendars)}개 연결 완료. 클로드 앱을 껐다 켜면 출결 도구가 붙습니다.")
+    if not (cfg.get("grade") and cfg.get("class")):
+        print("   ⚠️  학년·반이 비어 있습니다. 담임 학급을 넣으려면 setup_wizard.py 를 한 번 더 돌려 주세요 (나머지는 Enter).")
+    return 0
+
+
 # 지역 이름으로 답해도 된다 — 나이스 주소 앞글자 = 교육청 코드 (17개 모두 DNS 확인, 2026-09-18)
 REGION_CODES = {
     "서울": "sen", "부산": "pen", "대구": "dge", "인천": "ice", "광주": "gen",
@@ -215,7 +250,13 @@ def main():
     print("\n── 1. 나이스 접속 주소 ──")
     print("   브라우저로 본인 지역 나이스에 접속한 뒤 주소창을 그대로 붙여넣으세요.")
     print("   서울이면 기본값 그대로 Enter. 지역 이름(예: 경기)만 쳐도 됩니다.")
-    neis_url = to_neis_url(ask("나이스 주소", old.get("neis_url", teacher_config.DEFAULTS["neis_url"])))
+    # ★ 지역 이름·나이스 주소가 아니면 다시 묻는다 — 새 창이 앞으로 뜨는 사이 다른 데 치던 글자가 섞여
+    #   «RUDD서울» 같은 값이 그대로 저장된 일이 있었다 (2026-11-06 윈도우 실기기 시험)
+    while True:
+        neis_url = to_neis_url(ask("나이스 주소", old.get("neis_url", teacher_config.DEFAULTS["neis_url"])))
+        if neis_url.startswith("http") and ".neis.go.kr" in neis_url:
+            break
+        print("  ⚠️  지역 이름(예: 서울 · 경기)이나 나이스 주소(https://○○.neis.go.kr/…)로 다시 쳐 주세요.")
 
     print("\n── 2. 담임 학급 (담임이 아니면 그냥 Enter) ──")
     print("   학생 출결 자동화에만 쓰는 값입니다.")
@@ -252,6 +293,11 @@ def main():
         q = ask("학교 이름 (예: 원묵중)", school["school_name"], required=False)
         if not q or q == school["school_name"]:
             break
+        # ★ y/n 같은 짧은 답은 학교 이름이 아니다 — 옛 판은 6번 질문이 안 보여서 여기에 y/n 을 쳤고,
+        #   «n» 이 든 학교 하나가 묻지도 않고 저장됐다 (2026-11-06 윈도우 실기기 재현)
+        if q.strip().lower() in ("y", "n", "yes", "no", "예", "네", "아니요", "아니오", "ㅛ", "ㅜ") or len(q.strip()) < 2:
+            print("  ⏭  학교 이름이 아니라서 이 칸은 건너뜁니다. (학교 이름은 두 글자 이상, 예: 원묵중)")
+            break
         try:
             found_s = school_calendar.find_school(q, school_calendar.office_from_neis_url(neis_url)) \
                 or school_calendar.find_school(q)
@@ -275,31 +321,25 @@ def main():
         break
 
     print("\n── 6. 학생 출결 자동화 (구글 캘린더) ──")
-    print("   복무(조퇴·외출·출장)만 쓰실 거면 이 단계는 건너뛰셔도 됩니다.")
+    print("   담임이시면 y, 담임이 아니면 n (복무·에듀파인만 쓰시는 분).")
     calendars = old.get("calendars", {})
-    # ★ 구글 열쇠(oauth_client.json)가 없으면 묻지도 않고 건너뛴다 — 담임이라 y 를 눌렀다가
-    #   «파일이 없습니다»로 마법사가 통째로 끝나 인증서·연락처까지 저장 안 되던 일이 있었다 (2026-10-21 연수)
+    # ★ 구글 열쇠(oauth_client.json)가 없어도 묻는다 — 화면에 «담임이면 y»라고 적혀 있으니 담임은 y 를 누른다.
+    #   그때 오류로 끝내지 말고 «출결 연결은 나중에»로 넘긴다. 열쇠는 연수 뒤 따로 받는 분이 많다
+    #   (2026-10-21 매그넷고: y → «파일이 없습니다»로 통째로 끝남 / 2026-11-06: 열쇠 없는데 질문이 안 보여 헷갈림)
     if not _OAUTH_CLIENT_FILE.exists():
-        print("   구글 열쇠(oauth_client.json)가 아직 없어서 이 단계는 건너뜁니다.")
-        print("   담임이셔도 괜찮습니다 — 복무 자동화는 지금 바로 쓰실 수 있고,")
-        print("   출결은 열쇠를 넣은 뒤 이 설정을 한 번 더 돌리면 이어서 연결됩니다.")
-        use_calendar = "n"
-    else:
-        print("   출결까지 쓰시려면 y (구글 로그인 창이 뜹니다).")
-        use_calendar = ask("출결 자동화도 쓰시겠습니까? (y/n)",
-                           "y" if old.get("calendars") else "n", required=False)
+        print("   구글 열쇠가 아직 없어도 y 를 누르셔도 됩니다 — 오류 없이 넘어가고 나머지는 다 저장됩니다.")
+    use_calendar = ask("출결 자동화도 쓰시겠습니까? (y/n)",
+                       "y" if old.get("calendars") else "n", required=False)
 
     if use_calendar.strip().lower().startswith("y"):
-        try:
-            creds = run_oauth()
-            print("\n📅  출결 분류 캘린더 확인/생성 중...")
-            calendars = ensure_calendars(creds)
-        except (SystemExit, Exception) as e:
-            # 구글 쪽이 실패해도 앞에서 넣은 인증서·복무 값은 저장한다
-            print(f"  ⚠️  구글 캘린더 연결은 못 했습니다 ({e or '열쇠 파일 문제'}).")
-            print("     나머지 설정은 저장합니다. 출결은 나중에 이 설정을 다시 돌리면 됩니다.")
-    elif _OAUTH_CLIENT_FILE.exists():
-        print("   건너뜁니다. 나중에 출결도 쓰시려면 이 설정을 다시 돌리면 됩니다.")
+        if not _OAUTH_CLIENT_FILE.exists():
+            print("  ⏭  구글 열쇠(oauth_client.json)가 아직 없어서 출결 연결은 다음으로 미룹니다.")
+            print("     복무는 지금 바로 쓰실 수 있습니다.")
+            print("     열쇠를 만든 뒤 클로드에게 «출결 연결해줘» 라고 하시면 이 단계만 다시 합니다.")
+        else:
+            calendars = connect_calendars() or calendars
+    else:
+        print("   건너뜁니다. 나중에 출결도 쓰시려면 클로드에게 «출결 연결해줘» 라고 하시면 됩니다.")
 
     if cert_password:
         keyring.set_password(teacher_config.KEYRING_SERVICE, cert_name, cert_password)
@@ -331,6 +371,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--calendar" in sys.argv[1:]:
+        sys.exit(calendar_only())
     # 클로드가 돌리면 입력창이 없다 → 새 창으로 띄운다 (선생님이 직접 검은 창을 열 필요가 없다)
     if not os.environ.get("NEIS_WIZARD_WINDOW") and os.name == "nt" and not has_keyboard():
         sys.exit(relaunch_in_new_window())
@@ -357,6 +399,8 @@ if __name__ == "__main__":
         else:
             # 성공이면 저절로 닫는다 — Enter 를 안 누르면 창이 하루 넘게 남아 있었다 (2026-10-02 실측)
             print("\n✅ 끝났습니다. 이 창은 20초 뒤 저절로 닫힙니다 (Enter 를 누르면 바로).")
+            print("   창이 닫힌 뒤에도 클로드가 가만히 있으면, 클로드에게 이렇게 치세요:")
+            print("   «설정 창 끝났어. 확인하고 이어서 해줘»")
             try:
                 import msvcrt
                 end = time.time() + 20
