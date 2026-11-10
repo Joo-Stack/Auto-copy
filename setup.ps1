@@ -154,12 +154,13 @@ Write-Host "  설치 완료!" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
 if ($Widget) { exit 0 }
+# 구글 열쇠(oauth_client.json)는 학생 출결(구글 캘린더)을 쓸 때만 필요하다 — 복무 · 에듀파인 · EVPN 은 없이 된다.
+# 예전엔 열쇠가 없으면 «구글 연동부터» 순서를 찍어서 클로드가 구글 설정부터 하려 했다 (2026-11-10 분과회의 전 코덱스 검토)
+Write-Host "다음 명령으로 최초 설정을 진행하세요:" -ForegroundColor Yellow
+Write-Host "  .\.venv\Scripts\python.exe setup_wizard.py"
 if (-not (Test-Path "oauth_client.json")) {
-    Write-Host "다음 순서로 진행하세요:" -ForegroundColor Yellow
-    Write-Host "  1) docs/02_구글-연동.md 를 보고 oauth_client.json 만들기"
-    Write-Host "  2) .\.venv\Scripts\python.exe setup_wizard.py   (최초 설정)"
-} else {
-    Write-Host "다음 명령으로 최초 설정을 진행하세요:" -ForegroundColor Yellow
-    Write-Host "  .\.venv\Scripts\python.exe setup_wizard.py"
+    Write-Host ""
+    Write-Host "(구글 열쇠 oauth_client.json 은 학생 출결을 쓸 때만 필요합니다. 지금은 없어도 됩니다." -ForegroundColor DarkGray
+    Write-Host " 출결을 쓰실 때 docs/02_구글-연동.md 대로 만든 뒤 «출결 연결해줘» 라고 하시면 됩니다.)" -ForegroundColor DarkGray
 }
 Write-Host ""
